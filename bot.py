@@ -1,197 +1,114 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
 import time
-import json
-import hmac
 import hashlib
-import logging
-from typing import Dict, Optional, Any, Tuple
-from urllib.parse import urlparse
-
 import requests
+import re
+from urllib.parse import urlparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
-from telegram.constants import ParseMode
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# ==================== Logging ====================
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# ==================== Railway Variables ====================
+# ================== VARIABLES ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 APP_KEY = os.getenv("APP_KEY")
 APP_SECRET = os.getenv("APP_SECRET")
 TRACKING_ID = os.getenv("TRACKING_ID")
 
-CURRENCY = os.getenv("CURRENCY", "USD")
-LANGUAGE = os.getenv("LANGUAGE", "EN")
+ALIEXPRESS_GATEWAY = "https://api-sg.aliexpress.com/sync"
 
-if not all([BOT_TOKEN, APP_KEY, APP_SECRET, TRACKING_ID]):
-    raise ValueError("❌ تأكد من إضافة جميع المتغيرات في Railway")
+# ================== START MESSAGE ==================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 أهلاً بك\n\n"
+        "أرسل رابط أي منتج من AliExpress وسأعطيك زر شراء مباشر مع أفضل عرض متاح 🔥"
+    )
 
-# ==================== Cache ====================
-class MemoryCache:
-    def __init__(self, ttl=86400):
-        self.cache: Dict[str, Tuple[Any, float]] = {}
-        self.ttl = ttl
+# ================== EXTRACT PRODUCT ID ==================
+def extract_product_id(url):
+    patterns = [
+        r'/item/(\d+).html',
+        r'/i/(\d+).html',
+        r'product/(\d+)'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
 
-    def get(self, key):
-        if key in self.cache:
-            value, expiry = self.cache[key]
-            if expiry > time.time():
-                return value
-            del self.cache[key]
+# ================== GENERATE SIGN ==================
+def generate_sign(params):
+    sorted_params = sorted(params.items())
+    string = APP_SECRET
+    for key, value in sorted_params:
+        string += f"{key}{value}"
+    string += APP_SECRET
+
+    return hashlib.md5(string.encode('utf-8')).hexdigest().upper()
+
+# ================== CREATE AFFILIATE LINK ==================
+def create_affiliate_link(product_url):
+    timestamp = str(int(time.time() * 1000))
+
+    params = {
+        "method": "aliexpress.affiliate.link.generate",
+        "app_key": APP_KEY,
+        "timestamp": timestamp,
+        "format": "json",
+        "v": "2.0",
+        "sign_method": "md5",
+        "tracking_id": TRACKING_ID,
+        "promotion_link_type": "0",
+        "source_values": product_url
+    }
+
+    sign = generate_sign(params)
+    params["sign"] = sign
+
+    response = requests.post(ALIEXPRESS_GATEWAY, data=params)
+    result = response.json()
+
+    try:
+        return result["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]["promotion_links"][0]["promotion_link"]
+    except:
+        print("AliExpress Error:", result)
         return None
 
-    def set(self, key, value):
-        self.cache[key] = (value, time.time() + self.ttl)
-
-cache = MemoryCache()
-
-# ==================== API Client ====================
-class AliExpressAPI:
-
-    API_URL = "https://api-sg.aliexpress.com/rest"
-    API_PATH = "/aliexpress.affiliate.link.generate"
-
-    @staticmethod
-    def generate_sign(params: dict) -> str:
-        filtered = {k: v for k, v in params.items() if k != "sign"}
-        sorted_keys = sorted(filtered.keys())
-
-        sign_str = AliExpressAPI.API_PATH
-        for key in sorted_keys:
-            sign_str += key + str(filtered[key])
-
-        signature = hmac.new(
-            APP_SECRET.encode(),
-            sign_str.encode(),
-            hashlib.sha256
-        ).hexdigest().upper()
-
-        return signature
-
-    @staticmethod
-    def generate_affiliate_link(product_url: str) -> Optional[str]:
-
-        cached = cache.get(product_url)
-        if cached:
-            return cached
-
-        params = {
-            "app_key": APP_KEY,
-            "timestamp": str(int(time.time() * 1000)),
-            "method": "aliexpress.affiliate.link.generate",
-            "promotion_link_type": "1",
-            "source_values": product_url,
-            "tracking_id": TRACKING_ID,
-            "v": "2.0",
-            "sign_method": "sha256",
-            "format": "json",
-            "target_currency": CURRENCY,
-            "target_language": LANGUAGE,
-        }
-
-        params["sign"] = AliExpressAPI.generate_sign(params)
-
-        try:
-            response = requests.get(AliExpressAPI.API_URL, params=params, timeout=20)
-            response.raise_for_status()
-            data = response.json()
-
-            logger.info(json.dumps(data))
-
-            if "aliexpress_affiliate_link_generate_response" in data:
-                resp = data["aliexpress_affiliate_link_generate_response"]
-                resp_result = resp.get("resp_result", {})
-
-                if resp_result.get("resp_code") == "200":
-                    result = resp_result.get("result", {})
-                    links = result.get("promotion_links", {}).get("promotion_link", [])
-
-                    if links:
-                        if isinstance(links, list):
-                            affiliate_url = links[0].get("promotion_link")
-                        else:
-                            affiliate_url = links.get("promotion_link")
-
-                        if affiliate_url:
-                            cache.set(product_url, affiliate_url)
-                            return affiliate_url
-
-                logger.error(f"API Error: {resp_result}")
-                return None
-
-            logger.error(f"Unexpected API response: {data}")
-            return None
-
-        except Exception as e:
-            logger.exception(f"Exception: {e}")
-            return None
-
-# ==================== Helpers ====================
-def is_valid_aliexpress_url(url: str) -> bool:
-    return "aliexpress.com" in url.lower()
-
-# ==================== Handlers ====================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "👋 *مرحباً بك في بوت AliExpress الاحترافي*\n\n"
-        "📌 أرسل رابط منتج من AliExpress\n"
-        "وسأحوّله إلى رابط شراء خاص بك.\n\n"
-        "🚀 أرسل الرابط الآن."
-    )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-
+# ================== HANDLE MESSAGE ==================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text.strip()
+    url = update.message.text.strip()
 
-    if not is_valid_aliexpress_url(user_text):
-        await update.message.reply_text("❌ أرسل رابط AliExpress صحيح.")
+    if "aliexpress" not in url:
+        await update.message.reply_text("❌ أرسل رابط منتج صحيح من AliExpress")
         return
 
-    processing = await update.message.reply_text("⏳ جاري إنشاء رابط الشراء...")
+    await update.message.reply_text("⏳ جاري إنشاء رابط الشراء...")
 
-    affiliate_link = AliExpressAPI.generate_affiliate_link(user_text)
+    affiliate_link = create_affiliate_link(url)
 
-    if affiliate_link:
-        keyboard = [[InlineKeyboardButton("🛒 شراء الآن", url=affiliate_link)]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+    if not affiliate_link:
+        await update.message.reply_text("❌ حدث خطأ أثناء إنشاء الرابط")
+        return
 
-        await processing.edit_text(
-            "✅ تم إنشاء رابط الشراء بنجاح:",
-            reply_markup=reply_markup
-        )
-    else:
-        await processing.edit_text(
-            "❌ فشل إنشاء الرابط.\n"
-            "تحقق من مفاتيح API أو Tracking ID."
-        )
+    keyboard = [
+        [InlineKeyboardButton("🛒 شراء الآن", url=affiliate_link)]
+    ]
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error("Update error", exc_info=context.error)
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-# ==================== Main ====================
+    await update.message.reply_text(
+        "✅ اضغط الزر للشراء الآن:",
+        reply_markup=reply_markup
+    )
+
+# ================== MAIN ==================
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_error_handler(error_handler)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 Bot is running...")
-    application.run_polling()
+    print("Bot is running...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
