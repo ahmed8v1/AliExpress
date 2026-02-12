@@ -1,152 +1,110 @@
-import os
 import re
 import time
 import hashlib
 import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from urllib.parse import urlencode
+from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-APP_KEY = os.getenv("APP_KEY")
-APP_SECRET = os.getenv("APP_SECRET")
-TRACKING_ID = os.getenv("TRACKING_ID")
+# ==============================
+# ضع بياناتك هنا (أو في Variables داخل Railway)
+# ==============================
 
-API_URL = "https://api-sg.aliexpress.com/sync"
+BOT_TOKEN = "PUT_YOUR_TELEGRAM_BOT_TOKEN"
+APP_KEY = "PUT_YOUR_APP_KEY"
+APP_SECRET = "PUT_YOUR_APP_SECRET"
+TRACKING_ID = "PUT_YOUR_TRACKING_ID"
 
-# ===============================
-# توقيع API
-# ===============================
-def generate_sign(params):
-    sorted_params = sorted(params.items())
-    base_string = APP_SECRET + ''.join(f"{k}{v}" for k, v in sorted_params) + APP_SECRET
-    return hashlib.md5(base_string.encode('utf-8')).hexdigest().upper()
+# ==============================
 
-# ===============================
-# استخراج ID المنتج
-# ===============================
+
+# استخراج رقم المنتج حتى لو الرابط مختصر
 def extract_product_id(url):
-    match = re.search(r'/item/(\d+)\.html', url)
-    if match:
-        return match.group(1)
+    try:
+        response = requests.get(url, allow_redirects=True, timeout=10)
+        final_url = response.url
+
+        match = re.search(r'/item/(\d+)\.html', final_url)
+        if match:
+            return match.group(1)
+
+        match = re.search(r'/item/(\d+)', final_url)
+        if match:
+            return match.group(1)
+
+    except Exception as e:
+        print("Extract error:", e)
+
     return None
 
-# ===============================
-# جلب معلومات المنتج
-# ===============================
-def get_product_details(product_id):
-    params = {
-        "app_key": APP_KEY,
-        "method": "aliexpress.affiliate.productdetail.get",
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "format": "json",
-        "v": "2.0",
-        "product_ids": product_id,
-        "target_currency": "USD",
-        "target_language": "EN",
-        "tracking_id": TRACKING_ID
-    }
 
-    params["sign"] = generate_sign(params)
+# إنشاء التوقيع المطلوب من AliExpress
+def generate_sign(params):
+    sorted_params = sorted(params.items())
+    string = APP_SECRET
+    for k, v in sorted_params:
+        string += k + str(v)
+    string += APP_SECRET
+    return hashlib.md5(string.encode()).hexdigest().upper()
 
-    response = requests.post(API_URL, data=params)
-    data = response.json()
 
-    try:
-        product = data["aliexpress_affiliate_productdetail_get_response"]["resp_result"]["result"]["products"]["product"][0]
-        return {
-            "title": product["product_title"],
-            "price": product["target_sale_price"],
-            "original_price": product.get("target_original_price"),
-            "image": product["product_main_image_url"]
-        }
-    except:
-        return None
+# إنشاء رابط أفلييت
+def generate_affiliate_link(product_id):
+    url = "https://api-sg.aliexpress.com/sync"
 
-# ===============================
-# توليد رابط شراء
-# ===============================
-def create_affiliate_link(product_url):
     params = {
         "app_key": APP_KEY,
         "method": "aliexpress.affiliate.link.generate",
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "format": "json",
         "v": "2.0",
+        "sign_method": "md5",
         "promotion_link_type": "0",
-        "source_values": product_url,
-        "tracking_id": TRACKING_ID
+        "source_values": f"https://www.aliexpress.com/item/{product_id}.html",
+        "tracking_id": TRACKING_ID,
     }
 
     params["sign"] = generate_sign(params)
 
-    response = requests.post(API_URL, data=params)
-    data = response.json()
+    response = requests.post(url, data=params)
 
     try:
-        return data["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]["promotion_links"]["promotion_link"][0]["promotion_link"]
+        data = response.json()
+        link = data["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]["promotion_links"][0]["promotion_link"]
+        return link
     except:
+        print("API error:", response.text)
         return None
 
-# ===============================
-# التعامل مع الرسائل
-# ===============================
+
+# عند استلام رسالة
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
-    if "aliexpress.com" not in text.lower():
-        await update.message.reply_text("❌ أرسل رابط منتج AliExpress فقط")
+    if "aliexpress" not in text:
+        await update.message.reply_text("أرسل رابط منتج من AliExpress فقط.")
         return
-
-    await update.message.reply_text("⏳ جاري جلب أفضل عرض...")
 
     product_id = extract_product_id(text)
+
     if not product_id:
-        await update.message.reply_text("❌ لم أستطع استخراج رقم المنتج")
+        await update.message.reply_text("لم أستطع استخراج رقم المنتج.")
         return
 
-    product = get_product_details(product_id)
-    link = create_affiliate_link(text)
+    affiliate_link = generate_affiliate_link(product_id)
 
-    if not product or not link:
-        await update.message.reply_text("❌ حدث خطأ أثناء جلب البيانات")
+    if not affiliate_link:
+        await update.message.reply_text("حدث خطأ أثناء إنشاء الرابط.")
         return
 
-    title = product["title"]
-    price = product["price"]
-    original_price = product["original_price"]
-    image = product["image"]
-
-    discount_text = ""
-    if original_price and original_price != price:
-        discount_text = f"\n💸 قبل الخصم: {original_price} USD"
-
-    message = f"""
-🔥 عرض خاص!
-
-📦 {title}
-
-💰 السعر الحالي: {price} USD
-{discount_text}
-
-🚀 اطلب الآن من هنا 👇
-"""
-
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛒 شراء الآن", url=link)]
-    ])
-
-    await update.message.reply_photo(
-        photo=image,
-        caption=message,
-        reply_markup=keyboard
+    await update.message.reply_text(
+        f"🔥 رابط المنتج بعد الخصم:\n{affiliate_link}"
     )
 
-# ===============================
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🚀 Advanced Affiliate Bot Running...")
-    app.run_polling()
 
-if __name__ == "__main__":
-    main()
+# تشغيل البوت
+app = ApplicationBuilder().token(BOT_TOKEN).build()
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+print("Bot is running...")
+app.run_polling()
