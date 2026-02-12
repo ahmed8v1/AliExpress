@@ -87,8 +87,10 @@ def generate_affiliate_link(product_id):
         return data["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]["promotion_links"][0]["promotion_link"]
 
     except Exception as e:
-        print("API error:", e)
-        return None
+    print("========== API FULL RESPONSE ==========")
+    print(response.text)
+    print("=======================================")
+    return None
 
 
 # ==============================
