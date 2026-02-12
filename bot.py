@@ -1,23 +1,30 @@
-hereimport os
+import os
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# جلب التوكن من Railway Variables
+TOKEN = os.getenv("BOT_TOKEN")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    
-    if "aliexpress.com" in text:
-        await update.message.reply_text(
-            f"✅ تم استلام الرابط:\n{text}\n\n(قريباً سيتم تحويله إلى Affiliate)"
-        )
-    else:
-        await update.message.reply_text("أرسل رابط AliExpress فقط")
+# أمر /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 مرحباً بك!\n\nالبوت يعمل بنجاح على Railway 🚀")
+
+# الرد على أي رسالة
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text
+    await update.message.reply_text(f"📩 أنت قلت:\n{user_message}")
 
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Bot running...")
+    if not TOKEN:
+        print("❌ BOT_TOKEN غير موجود في Variables")
+        return
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+
+    print("✅ البوت يعمل الآن...")
     app.run_polling()
 
 if __name__ == "__main__":
