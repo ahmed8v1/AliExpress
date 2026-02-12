@@ -1,44 +1,55 @@
+import os
 import re
 import time
 import hashlib
 import requests
-from urllib.parse import urlencode
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 
 # ==============================
-# ضع بياناتك هنا (أو في Variables داخل Railway)
+# قراءة المتغيرات من Railway
 # ==============================
 
-BOT_TOKEN = "PUT_YOUR_TELEGRAM_BOT_TOKEN"
-APP_KEY = "PUT_YOUR_APP_KEY"
-APP_SECRET = "PUT_YOUR_APP_SECRET"
-TRACKING_ID = "PUT_YOUR_TRACKING_ID"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+APP_KEY = os.getenv("APP_KEY")
+APP_SECRET = os.getenv("APP_SECRET")
+TRACKING_ID = os.getenv("TRACKING_ID")
 
 # ==============================
+# استخراج رقم المنتج (يدعم الروابط المختصرة)
+# ==============================
 
-
-# استخراج رقم المنتج حتى لو الرابط مختصر
 def extract_product_id(url):
     try:
-        response = requests.get(url, allow_redirects=True, timeout=10)
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
+
+        response = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
         final_url = response.url
 
-        match = re.search(r'/item/(\d+)\.html', final_url)
-        if match:
-            return match.group(1)
+        print("Final URL:", final_url)
 
+        # البحث عن /item/رقم
         match = re.search(r'/item/(\d+)', final_url)
         if match:
             return match.group(1)
 
+        # البحث عن رقم طويل (احتياطي)
+        match = re.search(r'(\d{12,})', final_url)
+        if match:
+            return match.group(1)
+
     except Exception as e:
-        print("Extract error:", e)
+        print("Extraction error:", e)
 
     return None
 
 
-# إنشاء التوقيع المطلوب من AliExpress
+# ==============================
+# توليد التوقيع API
+# ==============================
+
 def generate_sign(params):
     sorted_params = sorted(params.items())
     string = APP_SECRET
@@ -48,7 +59,10 @@ def generate_sign(params):
     return hashlib.md5(string.encode()).hexdigest().upper()
 
 
+# ==============================
 # إنشاء رابط أفلييت
+# ==============================
+
 def generate_affiliate_link(product_id):
     url = "https://api-sg.aliexpress.com/sync"
 
@@ -66,19 +80,23 @@ def generate_affiliate_link(product_id):
 
     params["sign"] = generate_sign(params)
 
-    response = requests.post(url, data=params)
-
     try:
+        response = requests.post(url, data=params, timeout=15)
         data = response.json()
-        link = data["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]["promotion_links"][0]["promotion_link"]
-        return link
-    except:
-        print("API error:", response.text)
+
+        return data["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]["promotion_links"][0]["promotion_link"]
+
+    except Exception as e:
+        print("API error:", e)
         return None
 
 
-# عند استلام رسالة
+# ==============================
+# استقبال الرسائل
+# ==============================
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     text = update.message.text
 
     if "aliexpress" not in text:
@@ -102,7 +120,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ==============================
 # تشغيل البوت
+# ==============================
+
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN غير موجود في Variables")
+
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
